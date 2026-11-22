@@ -229,6 +229,9 @@ function state() {
     if (IS_REMOTE_DB) {
       client = createClient({ url: REMOTE_URL, authToken: process.env.TURSO_AUTH_TOKEN || process.env.DATABASE_AUTH_TOKEN });
     } else {
+      if (process.env.VERCEL) {
+        throw new Error("Production database is not configured. Set TURSO_DATABASE_URL and TURSO_AUTH_TOKEN in Vercel environment variables, then redeploy.");
+      }
       fs.mkdirSync(DATA_DIR, { recursive: true });
       client = createClient({ url: REMOTE_URL || `file:${DATA_DIR}/platform.db` });
     }
