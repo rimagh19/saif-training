@@ -6,6 +6,6 @@ export const POST = handler(async (req: Request, ctx: { params: Promise<{ id: st
   assertSameOrigin(req);
   const t = await requireTrainerApi();
   const b = await readJson(req);
-  const id = copyQuestion(t.id, toId((await ctx.params).id), toId(b.activity_id));
+  const id = await copyQuestion(t.id, toId((await ctx.params).id), toId(b.activity_id));
   return Response.json({ id });
 });

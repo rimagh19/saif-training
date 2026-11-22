@@ -17,7 +17,7 @@ export const POST = handler(async (req: Request) => {
     if (!title) throw new HttpError(400, "title_required");
     target = { newActivity: { courseId: toId(na.course_id), title } };
   } else throw new HttpError(400, "target_required");
-  const r = importToActivity(t.id, ids.map((i) => toId(i)), target);
-  publish(r.activityId, "state");
+  const r = await importToActivity(t.id, ids.map((i) => toId(i)), target);
+  await publish(r.activityId, "state");
   return Response.json({ activity_id: r.activityId, created: r.created });
 });

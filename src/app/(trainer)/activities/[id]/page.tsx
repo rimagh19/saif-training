@@ -11,9 +11,9 @@ export default async function ActivityPage({ params }: { params: Promise<{ id: s
   const t = await requireTrainerPage();
   const { d } = await getDict();
   let a;
-  try { a = getActivity(t.id, Number((await params).id)); } catch { notFound(); }
-  const questions = listQuestions(a.id);
-  const versions = bankVersions(t.id, [...new Set(questions.map((q) => q.bank_id).filter((x): x is number => !!x))]);
+  try { a = await getActivity(t.id, Number((await params).id)); } catch { notFound(); }
+  const questions = await listQuestions(a.id);
+  const versions = await bankVersions(t.id, [...new Set(questions.map((q) => q.bank_id).filter((x): x is number => !!x))]);
   return (
     <>
       <PageHeader
@@ -21,7 +21,7 @@ export default async function ActivityPage({ params }: { params: Promise<{ id: s
         title={a.title}
         subtitle={<ActivityStatus status={a.status} d={d} />}
       />
-      <ActivityEditor key={`${a.id}-${a.updated_at}`} activity={a} questions={questions} bankVersions={versions} suggestions={bankSuggestions(t.id)} />
+      <ActivityEditor key={`${a.id}-${a.updated_at}`} activity={a} questions={questions} bankVersions={versions} suggestions={await bankSuggestions(t.id)} />
     </>
   );
 }

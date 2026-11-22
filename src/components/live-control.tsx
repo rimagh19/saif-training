@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { useI18n } from "./i18n";
 import { api, ApiError } from "./api";
-import { useCountdown, useLiveResource } from "./live-hooks";
+import { TRAINER_POLL_MS, useCountdown, useLiveResource } from "./live-hooks";
 import { QR, useOrigin } from "./qr";
 import { optionText, typeLabel } from "./question-editor";
 import { ActivityStatus, Bar } from "./ui";
@@ -21,7 +21,7 @@ export const stateClass = (s: string) =>
 export function LiveControl({ activityId }: { activityId: number }) {
   const { d, err } = useI18n();
   const origin = useOrigin();
-  const { data: s, connected, reload, serverOffset } = useLiveResource<TrainerLiveState>(`/api/activities/${activityId}/live`, `/api/activities/${activityId}/stream`);
+  const { data: s, connected, reload, serverOffset } = useLiveResource<TrainerLiveState>(`/api/activities/${activityId}/live`, `/api/activities/${activityId}/stream`, TRAINER_POLL_MS);
   const left = useCountdown(s?.activity.q_state === "open" ? s.activity.q_deadline : null, serverOffset, reload);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");

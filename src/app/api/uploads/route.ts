@@ -1,12 +1,12 @@
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
 import { requireTrainerApi } from "@/lib/auth";
-import { UPLOAD_DIR } from "@/lib/db";
+import { now, run } from "@/lib/db";
 import { assertSameOrigin, handler, HttpError } from "@/lib/http";
 
 const TYPES: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif" };
-const MAX = 5 * 1024 * 1024;
+const MIME: Record<string, string> = { png: "image/png", jpg: "image/jpeg", webp: "image/webp", gif: "image/gif" };
+// Vercel limits request bodies to ~4.5 MB
+const MAX = 4 * 1024 * 1024;
 
 /** Magic-byte check so only real images are stored. */
 function sniff(buf: Buffer): string | null {
@@ -17,6 +17,7 @@ function sniff(buf: Buffer): string | null {
   return null;
 }
 
+/** Images are stored in the database, so they work on serverless hosting (no persistent disk). */
 export const POST = handler(async (req: Request) => {
   assertSameOrigin(req);
   await requireTrainerApi();
@@ -29,7 +30,6 @@ export const POST = handler(async (req: Request) => {
   const ext = sniff(buf);
   if (!ext) throw new HttpError(415, "unsupported_type");
   const name = `${crypto.randomBytes(16).toString("hex")}.${ext}`;
-  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-  fs.writeFileSync(path.join(UPLOAD_DIR, name), buf);
+  await run("INSERT INTO uploads(name, mime, data, created_at) VALUES (?, ?, ?, ?)", name, MIME[ext], new Uint8Array(buf), now());
   return Response.json({ name });
 });

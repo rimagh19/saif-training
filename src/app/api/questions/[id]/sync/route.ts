@@ -9,7 +9,7 @@ export const POST = handler(async (req: Request, ctx: { params: Promise<{ id: st
   assertSameOrigin(req);
   const t = await requireTrainerApi();
   const id = toId((await ctx.params).id);
-  const r = syncFromBank(t.id, id);
-  publish(getQuestion(t.id, id).activity_id, "state");
+  const r = await syncFromBank(t.id, id);
+  await publish((await getQuestion(t.id, id)).activity_id, "state");
   return Response.json(r);
 });

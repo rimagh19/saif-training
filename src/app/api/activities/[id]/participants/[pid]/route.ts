@@ -6,6 +6,6 @@ export const DELETE = handler(async (req: Request, ctx: { params: Promise<{ id: 
   assertSameOrigin(req);
   const t = await requireTrainerApi();
   const p = await ctx.params;
-  removeParticipant(t.id, toId(p.id), toId(p.pid));
+  await removeParticipant(t.id, toId(p.id), toId(p.pid));
   return Response.json({ ok: true });
 });

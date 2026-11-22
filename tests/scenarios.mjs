@@ -176,10 +176,13 @@ await test("before a question is opened, trainees see nothing of it", async () =
   assert.equal(s.me.name, "سالم");
 });
 
-// SSE listener for trainee
+// Live-update channel for the trainee: SSE (own server) or revision polling (serverless)
+const MODE = (await t1.get(`/api/play/${ctx.code}`)).data.realtime;
+const revBefore = (await t1.get(`/api/play/${ctx.code}`)).data.rev;
 let sseEvents = 0;
 const sseAbort = new AbortController();
 (async () => {
+  if (MODE !== "sse") return;
   try {
     const res = await fetch(`${BASE}/api/play/${ctx.code}/stream`, { signal: sseAbort.signal, headers: { Cookie: t1.cookieHeader() } });
     const reader = res.body.getReader();
@@ -204,9 +207,17 @@ await test("open question: trainee sees it WITHOUT correct answer or explanation
   assert.ok(!raw.includes("الإنذار أولاً"), "explanation text must not leak");
   assert.ok(s.can_answer);
 });
-await test("live updates are pushed over SSE (no manual refresh)", async () => {
-  await sleep(500);
-  assert.ok(sseEvents >= 1, `expected change events, got ${sseEvents}`);
+await test(`live updates reach clients without manual refresh (${MODE})`, async () => {
+  if (MODE === "sse") {
+    await sleep(500);
+    assert.ok(sseEvents >= 1, `expected change events, got ${sseEvents}`);
+  } else {
+    expectStatus(await t1.get(`/api/play/${ctx.code}/stream`), 204, "no streams on serverless");
+    const cur = (await t1.get(`/api/play/${ctx.code}`)).data.rev;
+    assert.ok(cur > revBefore, "revision advanced after the trainer opened the question");
+    expectStatus(await t1.get(`/api/play/${ctx.code}?rev=${cur}`), 204, "unchanged revision → cheap 204");
+    expectStatus(await t1.get(`/api/play/${ctx.code}?rev=${revBefore}`), 200, "older revision → full state");
+  }
 });
 await test("answer validation: wrong question / malformed answer rejected", async () => {
   expectStatus(await t1.post(`/api/play/${ctx.code}/answer`, { question_id: ctx.q.tf, answer: { choice: "true" } }), 409);

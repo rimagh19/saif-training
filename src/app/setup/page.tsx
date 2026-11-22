@@ -5,7 +5,7 @@ import { AuthShell } from "@/components/auth-shell";
 import { SetupForm } from "./form";
 
 export default async function SetupPage() {
-  if (trainerCount() > 0) redirect("/login");
+  if (await trainerCount() > 0) redirect("/login");
   const { d } = await getDict();
   return (
     <AuthShell d={d}>

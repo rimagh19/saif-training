@@ -12,9 +12,9 @@ export default async function CoursePage({ params }: { params: Promise<{ id: str
   const t = await requireTrainerPage();
   const { d, lang } = await getDict();
   let course;
-  try { course = getCourse(t.id, Number((await params).id)); } catch { notFound(); }
-  const activities = listActivities(t.id, { courseId: course.id });
-  const report = courseReport(t.id, course.id);
+  try { course = await getCourse(t.id, Number((await params).id)); } catch { notFound(); }
+  const activities = await listActivities(t.id, { courseId: course.id });
+  const report = await courseReport(t.id, course.id);
   const qCount = activities.reduce((s, a) => s + a.question_count, 0);
   const pCount = activities.reduce((s, a) => s + a.participant_count, 0);
 

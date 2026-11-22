@@ -1,6 +1,10 @@
 import { handler } from "@/lib/http";
-import { traineeState } from "@/lib/live";
+import { codeRevUnchanged, traineeState } from "@/lib/live";
+import { notModified, revParam } from "@/lib/poll";
 
-export const GET = handler(async (_req: Request, ctx: { params: Promise<{ code: string }> }) => {
-  return Response.json(await traineeState((await ctx.params).code), { headers: { "Cache-Control": "no-store" } });
+export const GET = handler(async (req: Request, ctx: { params: Promise<{ code: string }> }) => {
+  const code = (await ctx.params).code;
+  const rev = revParam(req);
+  if (rev !== null && (await codeRevUnchanged(code, rev))) return notModified();
+  return Response.json(await traineeState(code), { headers: { "Cache-Control": "no-store" } });
 });

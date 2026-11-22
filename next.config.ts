@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["better-sqlite3", "exceljs"],
+  serverExternalPackages: ["@libsql/client", "libsql", "exceljs"],
   poweredByHeader: false,
   async headers() {
     const dev = process.env.NODE_ENV !== "production";

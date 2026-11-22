@@ -8,8 +8,8 @@ import { Bar, CourseStatus, Empty, fmtDate, fmtDateTime, PageHeader } from "@/co
 export default async function Reports() {
   const t = await requireTrainerPage();
   const { d, lang } = await getDict();
-  const runs = recentRuns(t.id, 30);
-  const courses = listCourses(t.id, { status: "all" });
+  const runs = await recentRuns(t.id, 30);
+  const courses = await listCourses(t.id, { status: "all" });
   return (
     <>
       <PageHeader title={d.reports_title} />

@@ -1,9 +1,9 @@
 import "server-only";
 import { cookies } from "next/headers";
-import { db, now, SNAPSHOT_SQL, tx } from "./db";
+import { all, get, now, run, SNAPSHOT_SQL, tx } from "./db";
 import { HttpError } from "./http";
-import { publish } from "./bus";
-import { checkRateLimit, clientIp, randomToken, recordFailedAttempt, sha256 } from "./auth";
+import { publish, REALTIME_MODE } from "./bus";
+import { checkRateLimit, clientIp, randomToken, recordFailedAttempt, secureCookies, sha256 } from "./auth";
 import { getActivity, listQuestions, parseQuestion, touchCourse, type Activity } from "./repo";
 import { describeAnswer, grade, sanitizeAnswer, seededShuffle, type AnswerPayload, type Question, type TfLabels } from "./questions";
 
@@ -13,10 +13,10 @@ const GRACE_MS = 1500;
 export type QState = Activity["q_state"];
 
 /** Applies the timer: an "open" question whose deadline passed is closed. */
-function settle<T extends Activity>(a: T): T {
+async function settle<T extends Activity>(a: T): Promise<T> {
   if (a.q_state === "open" && a.q_deadline && now() > a.q_deadline + GRACE_MS) {
-    db().prepare("UPDATE activities SET q_state = 'closed' WHERE id = ? AND q_state = 'open'").run(a.id);
-    publish(a.id, "state");
+    await run("UPDATE activities SET q_state = 'closed' WHERE id = ? AND q_state = 'open'", a.id);
+    await publish(a.id, "state");
     return { ...a, q_state: "closed" };
   }
   return a;
@@ -26,22 +26,22 @@ function settle<T extends Activity>(a: T): T {
 
 export type ControlAction = "start" | "restart" | "goto" | "next" | "prev" | "open" | "close" | "reveal" | "end" | "show_dist" | "extend";
 
-export function control(trainerId: number, activityId: number, action: ControlAction, payload: { questionId?: number; seconds?: number; value?: boolean } = {}) {
-  const a = getActivity(trainerId, activityId);
-  const qs = listQuestions(activityId);
+export async function control(trainerId: number, activityId: number, action: ControlAction, payload: { questionId?: number; seconds?: number; value?: boolean } = {}) {
+  const a = await getActivity(trainerId, activityId);
+  const qs = await listQuestions(activityId);
   const t = now();
   const idx = qs.findIndex((q) => q.id === a.current_question_id);
-  const set = (sql: string, ...args: unknown[]) => db().prepare(`UPDATE activities SET ${sql}, updated_at = ? WHERE id = ?`).run(...args, t, activityId);
+  const set = async (sql: string, ...args: unknown[]) => await run(`UPDATE activities SET ${sql}, updated_at = ? WHERE id = ?`, ...args, t, activityId);
 
-  const newRun = () => {
+  const newRun = async () => {
     if (qs.length === 0) throw new HttpError(400, "no_questions");
-    tx(() => {
-      if (a.current_run_id) db().prepare("UPDATE runs SET ended_at = COALESCE(ended_at, ?) WHERE id = ?").run(t, a.current_run_id);
-      const n = (db().prepare("SELECT COALESCE(MAX(number), 0) + 1 AS n FROM runs WHERE activity_id = ?").get(activityId) as { n: number }).n;
-      const r = db().prepare("INSERT INTO runs(activity_id, number, started_at) VALUES (?, ?, ?)").run(activityId, n, t);
-      set("status = 'live', current_run_id = ?, current_question_id = ?, q_state = 'idle', q_opened_at = NULL, q_deadline = NULL, q_show_dist = 0", Number(r.lastInsertRowid), qs[0].id);
-      db().prepare("UPDATE courses SET status = 'active', updated_at = ? WHERE id = ? AND status = 'draft'").run(t, a.course_id);
-    });
+    await tx(async () => {
+            if (a.current_run_id) await run("UPDATE runs SET ended_at = COALESCE(ended_at, ?) WHERE id = ?", t, a.current_run_id);
+            const n = (await get("SELECT COALESCE(MAX(number), 0) + 1 AS n FROM runs WHERE activity_id = ?", activityId) as { n: number }).n;
+            const r = await run("INSERT INTO runs(activity_id, number, started_at) VALUES (?, ?, ?)", activityId, n, t);
+            await set("status = 'live', current_run_id = ?, current_question_id = ?, q_state = 'idle', q_opened_at = NULL, q_deadline = NULL, q_show_dist = 0", r.lastId, qs[0].id);
+            await run("UPDATE courses SET status = 'active', updated_at = ? WHERE id = ? AND status = 'draft'", t, a.course_id);
+          });
   };
 
   const requireLive = () => {
@@ -51,16 +51,16 @@ export function control(trainerId: number, activityId: number, action: ControlAc
   switch (action) {
     case "start":
       if (a.status === "live" && a.current_run_id) break;
-      newRun();
+      await newRun();
       break;
     case "restart":
-      newRun();
+      await newRun();
       break;
     case "goto": {
       requireLive();
       const q = qs.find((x) => x.id === Number(payload.questionId));
       if (!q) throw new HttpError(404, "question_not_found");
-      set("current_question_id = ?, q_state = 'idle', q_opened_at = NULL, q_deadline = NULL, q_show_dist = 0", q.id);
+      await set("current_question_id = ?, q_state = 'idle', q_opened_at = NULL, q_deadline = NULL, q_show_dist = 0", q.id);
       break;
     }
     case "next":
@@ -68,7 +68,7 @@ export function control(trainerId: number, activityId: number, action: ControlAc
       requireLive();
       const target = qs[idx + (action === "next" ? 1 : -1)];
       if (!target) throw new HttpError(400, "no_more_questions");
-      set("current_question_id = ?, q_state = 'idle', q_opened_at = NULL, q_deadline = NULL, q_show_dist = 0", target.id);
+      await set("current_question_id = ?, q_state = 'idle', q_opened_at = NULL, q_deadline = NULL, q_show_dist = 0", target.id);
       break;
     }
     case "open": {
@@ -76,91 +76,83 @@ export function control(trainerId: number, activityId: number, action: ControlAc
       const q = qs[idx];
       if (!q) throw new HttpError(400, "no_current_question");
       const secs = payload.seconds !== undefined ? Math.max(0, Math.min(3600, Math.round(Number(payload.seconds)))) : q.time_limit;
-      tx(() => {
-        set("q_state = 'open', q_opened_at = ?, q_deadline = ?", t, secs > 0 ? t + secs * 1000 : null);
-        // Record the question exactly as asked. If it was edited before anyone answered, refresh the snapshot.
-        db()
-          .prepare(
-            `INSERT INTO run_questions(run_id, question_id, opened_at, snapshot) SELECT ?, q.id, ?, ${SNAPSHOT_SQL} FROM questions q WHERE q.id = ?
+      await tx(async () => {
+                  await set("q_state = 'open', q_opened_at = ?, q_deadline = ?", t, secs > 0 ? t + secs * 1000 : null);
+                  // Record the question exactly as asked. If it was edited before anyone answered, refresh the snapshot.
+                  await run(`INSERT INTO run_questions(run_id, question_id, opened_at, snapshot) SELECT ?, q.id, ?, ${SNAPSHOT_SQL} FROM questions q WHERE q.id = ?
              ON CONFLICT(run_id, question_id) DO UPDATE SET snapshot = excluded.snapshot
-             WHERE NOT EXISTS (SELECT 1 FROM answers WHERE run_id = excluded.run_id AND question_id = excluded.question_id)`
-          )
-          .run(a.current_run_id, t, q.id);
-      });
+             WHERE NOT EXISTS (SELECT 1 FROM answers WHERE run_id = excluded.run_id AND question_id = excluded.question_id)`, a.current_run_id, t, q.id);
+                });
       break;
     }
     case "close":
       requireLive();
-      set("q_state = 'closed', q_deadline = NULL");
+      await set("q_state = 'closed', q_deadline = NULL");
       break;
     case "reveal":
       requireLive();
       if (!a.current_question_id) throw new HttpError(400, "no_current_question");
-      set("q_state = 'revealed', q_deadline = NULL, q_show_dist = 1");
+      await set("q_state = 'revealed', q_deadline = NULL, q_show_dist = 1");
       break;
     case "show_dist":
       requireLive();
       if (!a.current_question_id) throw new HttpError(400, "no_current_question");
-      set("q_show_dist = ?", payload.value === undefined ? (a.q_show_dist ? 0 : 1) : payload.value ? 1 : 0);
+      await set("q_show_dist = ?", payload.value === undefined ? (a.q_show_dist ? 0 : 1) : payload.value ? 1 : 0);
       break;
     case "extend": {
       requireLive();
-      const cur = settle(a);
+      const cur = await settle(a);
       if (cur.q_state !== "open" || !cur.q_deadline) throw new HttpError(409, "not_timed");
       const secs = Math.max(5, Math.min(600, Math.round(Number(payload.seconds ?? 15))));
-      set("q_deadline = ?", Math.max(cur.q_deadline, t) + secs * 1000);
+      await set("q_deadline = ?", Math.max(cur.q_deadline, t) + secs * 1000);
       break;
     }
     case "end":
       if (a.status !== "live") break;
-      tx(() => {
-        if (a.current_run_id) db().prepare("UPDATE runs SET ended_at = ? WHERE id = ?").run(t, a.current_run_id);
-        set("status = 'ended', q_state = 'idle', q_deadline = NULL");
-      });
+      await tx(async () => {
+                  if (a.current_run_id) await run("UPDATE runs SET ended_at = ? WHERE id = ?", t, a.current_run_id);
+                  await set("status = 'ended', q_state = 'idle', q_deadline = NULL");
+                });
       break;
     default:
       throw new HttpError(400, "unknown_action");
   }
-  touchCourse(a.course_id);
-  publish(activityId, "state");
+  await touchCourse(a.course_id);
+  await publish(activityId, "state");
 }
 
 /** Trainer overrides the grading of one answer (e.g. short text / scenario review). */
-export function gradeAnswer(trainerId: number, answerId: number, correct: boolean) {
-  const row = db()
-    .prepare(
-      `SELECT ans.id, ans.question_id, r.activity_id FROM answers ans JOIN runs r ON r.id = ans.run_id
+export async function gradeAnswer(trainerId: number, answerId: number, correct: boolean) {
+  const row = await get(`SELECT ans.id, ans.question_id, r.activity_id FROM answers ans JOIN runs r ON r.id = ans.run_id
        JOIN activities a ON a.id = r.activity_id JOIN courses c ON c.id = a.course_id
-       WHERE ans.id = ? AND c.trainer_id = ?`
-    )
-    .get(answerId, trainerId) as { id: number; question_id: number; activity_id: number } | undefined;
+       WHERE ans.id = ? AND c.trainer_id = ?`, answerId, trainerId) as { id: number; question_id: number; activity_id: number } | undefined;
   if (!row) throw new HttpError(404, "not_found");
   // points as they were when the question was asked
-  const snap = db().prepare("SELECT snapshot FROM run_questions WHERE run_id = (SELECT run_id FROM answers WHERE id = ?) AND question_id = ?").get(answerId, row.question_id) as { snapshot: string | null } | undefined;
+  const snap = await get("SELECT snapshot FROM run_questions WHERE run_id = (SELECT run_id FROM answers WHERE id = ?) AND question_id = ?", answerId, row.question_id) as { snapshot: string | null } | undefined;
   const points = snap?.snapshot
     ? (JSON.parse(snap.snapshot) as { points: number }).points
-    : (db().prepare("SELECT points FROM questions WHERE id = ?").get(row.question_id) as { points: number }).points;
-  db().prepare("UPDATE answers SET is_correct = ?, score = ?, graded_by = 'trainer' WHERE id = ?").run(correct ? 1 : 0, correct ? points : 0, answerId);
-  publish(row.activity_id, "answer");
+    : (await get("SELECT points FROM questions WHERE id = ?", row.question_id) as { points: number }).points;
+  await run("UPDATE answers SET is_correct = ?, score = ?, graded_by = 'trainer' WHERE id = ?", correct ? 1 : 0, correct ? points : 0, answerId);
+  await publish(row.activity_id, "answer");
 }
 
-export function removeParticipant(trainerId: number, activityId: number, participantId: number) {
-  const a = getActivity(trainerId, activityId);
-  const r = db().prepare("DELETE FROM participants WHERE id = ? AND run_id = ?").run(participantId, a.current_run_id);
+export async function removeParticipant(trainerId: number, activityId: number, participantId: number) {
+  const a = await getActivity(trainerId, activityId);
+  const r = await run("DELETE FROM participants WHERE id = ? AND run_id = ?", participantId, a.current_run_id);
   if (!r.changes) throw new HttpError(404, "not_found");
-  publish(activityId, "participant");
+  await publish(activityId, "participant");
 }
 
 // ======================= Trainer live state =======================
 
-export function trainerLiveState(trainerId: number, activityId: number, tf?: TfLabels) {
-  const a = settle(getActivity(trainerId, activityId));
-  const qs = listQuestions(activityId);
+export async function trainerLiveState(trainerId: number, activityId: number, tf?: TfLabels) {
+  const a = await settle(await getActivity(trainerId, activityId));
+  const qs = await listQuestions(activityId);
   const current = qs.find((q) => q.id === a.current_question_id) ?? null;
   const runId = a.current_run_id;
 
   const participants = runId
-    ? (db().prepare("SELECT id, display_name, trainee_number, joined_at FROM participants WHERE run_id = ? ORDER BY joined_at").all(runId) as {
+    ? (await all("SELECT id, display_name, trainee_number, joined_at FROM participants WHERE run_id = ? ORDER BY joined_at", runId) as {
         id: number;
         display_name: string;
         trainee_number: string | null;
@@ -171,13 +163,9 @@ export function trainerLiveState(trainerId: number, activityId: number, tf?: TfL
   let answers: { id: number; participant_id: number; name: string; trainee_number: string | null; text: string; is_correct: number | null; graded_by: string; submitted_at: number }[] = [];
   let distribution: { id: string; text: string; count: number; correct: boolean }[] = [];
   if (runId && current) {
-    const rows = db()
-      .prepare(
-        `SELECT ans.id, ans.participant_id, ans.answer, ans.is_correct, ans.graded_by, ans.submitted_at, p.display_name AS name, p.trainee_number
+    const rows = await all(`SELECT ans.id, ans.participant_id, ans.answer, ans.is_correct, ans.graded_by, ans.submitted_at, p.display_name AS name, p.trainee_number
          FROM answers ans JOIN participants p ON p.id = ans.participant_id
-         WHERE ans.run_id = ? AND ans.question_id = ? ORDER BY ans.submitted_at`
-      )
-      .all(runId, current.id) as { id: number; participant_id: number; answer: string; is_correct: number | null; graded_by: string; submitted_at: number; name: string; trainee_number: string | null }[];
+         WHERE ans.run_id = ? AND ans.question_id = ? ORDER BY ans.submitted_at`, runId, current.id) as { id: number; participant_id: number; answer: string; is_correct: number | null; graded_by: string; submitted_at: number; name: string; trainee_number: string | null }[];
     answers = rows.map((r) => ({ ...r, text: describeAnswer(current, JSON.parse(r.answer), tf) }));
     if (current.type !== "short" && current.type !== "order") {
       const counts = new Map<string, number>();
@@ -195,9 +183,9 @@ export function trainerLiveState(trainerId: number, activityId: number, tf?: TfL
     wrong: answers.filter((x) => x.is_correct === 0).length,
     pending: answers.filter((x) => x.is_correct === null).length,
   };
-  const leaderboard = runId && a.show_leaderboard ? runLeaderboard(runId, 10) : [];
-  const run = runId ? (db().prepare("SELECT id, number, started_at, ended_at FROM runs WHERE id = ?").get(runId) as { id: number; number: number; started_at: number; ended_at: number | null }) : null;
-  const askedIds = runId ? (db().prepare("SELECT question_id FROM run_questions WHERE run_id = ?").all(runId) as { question_id: number }[]).map((r) => r.question_id) : [];
+  const leaderboard = runId && a.show_leaderboard ? await runLeaderboard(runId, 10) : [];
+  const run = runId ? (await get("SELECT id, number, started_at, ended_at FROM runs WHERE id = ?", runId) as { id: number; number: number; started_at: number; ended_at: number | null }) : null;
+  const askedIds = runId ? (await all("SELECT question_id FROM run_questions WHERE run_id = ?", runId) as { question_id: number }[]).map((r) => r.question_id) : [];
 
   return {
     activity: {
@@ -217,6 +205,8 @@ export function trainerLiveState(trainerId: number, activityId: number, tf?: TfL
       q_show_dist: !!a.q_show_dist,
     },
     server_now: now(),
+    rev: a.rev,
+    realtime: REALTIME_MODE,
     run,
     outcome,
     questions: qs.map((q) => ({ id: q.id, title: q.title || q.body.slice(0, 80), type: q.type, asked: askedIds.includes(q.id) })),
@@ -228,17 +218,13 @@ export function trainerLiveState(trainerId: number, activityId: number, tf?: TfL
     leaderboard,
   };
 }
-export type TrainerLiveState = ReturnType<typeof trainerLiveState>;
+export type TrainerLiveState = Awaited<ReturnType<typeof trainerLiveState>>;
 
-export function runLeaderboard(runId: number, limit = 1000) {
-  return db()
-    .prepare(
-      `SELECT p.id, p.display_name AS name, p.trainee_number, COALESCE(SUM(ans.score), 0) AS score,
+export async function runLeaderboard(runId: number, limit = 1000) {
+  return await all(`SELECT p.id, p.display_name AS name, p.trainee_number, COALESCE(SUM(ans.score), 0) AS score,
               COALESCE(SUM(CASE WHEN ans.is_correct = 1 THEN 1 ELSE 0 END), 0) AS correct
        FROM participants p LEFT JOIN answers ans ON ans.participant_id = p.id
-       WHERE p.run_id = ? GROUP BY p.id ORDER BY score DESC, correct DESC, p.joined_at ASC LIMIT ?`
-    )
-    .all(runId, limit) as { id: number; name: string; trainee_number: string | null; score: number; correct: number }[];
+       WHERE p.run_id = ? GROUP BY p.id ORDER BY score DESC, correct DESC, p.joined_at ASC LIMIT ?`, runId, limit) as { id: number; name: string; trainee_number: string | null; score: number; correct: number }[];
 }
 
 // ======================= Trainee side =======================
@@ -254,19 +240,17 @@ const CODE_FAILS_MAX = 30;
 
 export async function activityByCode(code: string): Promise<PublicActivity> {
   const key = `code:${await clientIp()}`;
-  checkRateLimit(key, CODE_FAILS_MAX);
+  await checkRateLimit(key, CODE_FAILS_MAX);
   const clean = String(code).replace(/\D/g, "").slice(0, 6);
   const a =
     clean.length === 6
-      ? (db()
-          .prepare("SELECT a.*, c.title AS course_title FROM activities a JOIN courses c ON c.id = a.course_id WHERE a.join_code = ? AND c.status != 'archived'")
-          .get(clean) as PublicActivity | undefined)
+      ? (await get("SELECT a.*, c.title AS course_title FROM activities a JOIN courses c ON c.id = a.course_id WHERE a.join_code = ? AND c.status != 'archived'", clean) as PublicActivity | undefined)
       : undefined;
   if (!a) {
-    recordFailedAttempt(key);
+    await recordFailedAttempt(key);
     throw new HttpError(404, "activity_not_found");
   }
-  return settle(a);
+  return await settle(a);
 }
 
 const pCookie = (activityId: number) => `safe_p_${activityId}`;
@@ -279,9 +263,7 @@ async function currentParticipant(a: Activity): Promise<Participant | null> {
   const token = (await cookies()).get(pCookie(a.id))?.value;
   if (!token || token.length > 100) return null;
   return (
-    (db()
-      .prepare("SELECT id, run_id, display_name, trainee_number FROM participants WHERE token_hash = ? AND run_id = ?")
-      .get(sha256(token), a.current_run_id) as Participant | undefined) ?? null
+    (await get("SELECT id, run_id, display_name, trainee_number FROM participants WHERE token_hash = ? AND run_id = ?", sha256(token), a.current_run_id) as Participant | undefined) ?? null
   );
 }
 
@@ -295,18 +277,16 @@ export async function joinActivity(code: string, name: string, traineeNumber: st
   if (!display) throw new HttpError(400, "name_required");
   if (a.identity_mode === "name_id" && !number) throw new HttpError(400, "trainee_number_required");
   const token = randomToken();
-  const r = db()
-    .prepare("INSERT INTO participants(run_id, display_name, trainee_number, token_hash, joined_at) VALUES (?, ?, ?, ?, ?)")
-    .run(a.current_run_id, display, a.identity_mode === "name_id" ? number : null, sha256(token), now());
+  const r = await run("INSERT INTO participants(run_id, display_name, trainee_number, token_hash, joined_at) VALUES (?, ?, ?, ?, ?)", a.current_run_id, display, a.identity_mode === "name_id" ? number : null, sha256(token), now());
   (await cookies()).set(pCookie(a.id), token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.COOKIE_SECURE === "true",
+    secure: secureCookies(),
     path: TRAINEE_COOKIE_PATH,
     maxAge: 60 * 60 * 24,
   });
-  publish(a.id, "participant");
-  return { id: Number(r.lastInsertRowid), run_id: a.current_run_id, display_name: display, trainee_number: number || null };
+  await publish(a.id, "participant");
+  return { id: r.lastId, run_id: a.current_run_id, display_name: display, trainee_number: number || null };
 }
 
 type TraineeQuestion = {
@@ -341,6 +321,8 @@ export async function traineeState(code: string) {
       allow_change: !!a.allow_change,
     },
     server_now: now(),
+    rev: a.rev,
+    realtime: REALTIME_MODE,
     me: me ? { name: me.display_name, trainee_number: me.trainee_number } : null,
     q_state: a.q_state as QState,
     question: null as null | TraineeQuestion,
@@ -352,17 +334,17 @@ export async function traineeState(code: string) {
     my_answered: 0,
   };
   if (!me) return base;
-  const mineAll = db().prepare("SELECT COUNT(*) c, COALESCE(SUM(score),0) s FROM answers WHERE participant_id = ?").get(me.id) as { c: number; s: number };
+  const mineAll = await get("SELECT COUNT(*) c, COALESCE(SUM(score),0) s FROM answers WHERE participant_id = ?", me.id) as { c: number; s: number };
   base.my_score = mineAll.s;
   base.my_answered = mineAll.c;
   if (a.status !== "live" || !a.current_question_id) return base;
   // Before the trainer starts a question, trainees only see a waiting screen.
   if (a.q_state === "idle") return base;
 
-  const row = db().prepare("SELECT * FROM questions WHERE id = ? AND activity_id = ?").get(a.current_question_id, a.id);
+  const row = await get("SELECT * FROM questions WHERE id = ? AND activity_id = ?", a.current_question_id, a.id);
   if (!row) return base;
   const q = parseQuestion(row as never);
-  const all = db().prepare("SELECT id FROM questions WHERE activity_id = ? AND deleted_at IS NULL ORDER BY position, id").all(a.id) as { id: number }[];
+  const allIds = await all("SELECT id FROM questions WHERE activity_id = ? AND deleted_at IS NULL ORDER BY position, id", a.id) as { id: number }[];
 
   base.question = {
     id: q.id,
@@ -374,12 +356,10 @@ export async function traineeState(code: string) {
     points: q.points,
     time_limit: q.time_limit,
     deadline: a.q_state === "open" ? a.q_deadline : null,
-    index: all.findIndex((x) => x.id === q.id) + 1,
-    total: all.length,
+    index: allIds.findIndex((x) => x.id === q.id) + 1,
+    total: allIds.length,
   };
-  const mine = db()
-    .prepare("SELECT answer, is_correct FROM answers WHERE run_id = ? AND question_id = ? AND participant_id = ?")
-    .get(a.current_run_id, q.id, me.id) as { answer: string; is_correct: number | null } | undefined;
+  const mine = await get("SELECT answer, is_correct FROM answers WHERE run_id = ? AND question_id = ? AND participant_id = ?", a.current_run_id, q.id, me.id) as { answer: string; is_correct: number | null } | undefined;
   base.my_answer = mine ? JSON.parse(mine.answer) : null;
   const answerWindow = a.q_state === "open" || (a.q_state === "closed" && !!a.allow_late_edit);
   base.answer_locked = !!mine && !a.allow_change;
@@ -406,7 +386,7 @@ export async function submitAnswer(code: string, questionId: number, raw: unknow
   const lateEditAllowed = a.q_state === "closed" && !!a.allow_late_edit;
   if (!open && !lateEditAllowed) throw new HttpError(409, "answers_closed");
 
-  const row = db().prepare("SELECT * FROM questions WHERE id = ? AND activity_id = ?").get(questionId, a.id);
+  const row = await get("SELECT * FROM questions WHERE id = ? AND activity_id = ?", questionId, a.id);
   if (!row) throw new HttpError(404, "question_not_found");
   const q = parseQuestion(row as never);
   const payload = sanitizeAnswer(q, raw);
@@ -418,20 +398,16 @@ export async function submitAnswer(code: string, questionId: number, raw: unknow
   const insert = `INSERT INTO answers(run_id, question_id, participant_id, answer, is_correct, score, graded_by, submitted_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
   if (a.allow_change) {
-    db()
-      .prepare(
-        `${insert} ON CONFLICT(run_id, question_id, participant_id) DO UPDATE SET
+    await run(`${insert} ON CONFLICT(run_id, question_id, participant_id) DO UPDATE SET
          answer = excluded.answer, is_correct = excluded.is_correct, score = excluded.score,
-         graded_by = excluded.graded_by, updated_at = excluded.updated_at`
-      )
-      .run(...values);
+         graded_by = excluded.graded_by, updated_at = excluded.updated_at`, ...values);
   } else {
     // Single answer only: the unique key makes this atomic, so double taps or
     // parallel requests can never store a second answer.
-    const r = db().prepare(`${insert} ON CONFLICT(run_id, question_id, participant_id) DO NOTHING`).run(...values);
+    const r = await run(`${insert} ON CONFLICT(run_id, question_id, participant_id) DO NOTHING`, ...values);
     if (r.changes === 0) throw new HttpError(409, "already_answered");
   }
-  publish(a.id, "answer");
+  await publish(a.id, "answer");
   return { ok: true };
 }
 
@@ -445,8 +421,8 @@ export async function submitAnswer(code: string, questionId: number, raw: unknow
  *  - answer distribution is only sent when the trainer chooses to show it.
  * Individual answers and trainee names are never sent (except the opt-in ranking).
  */
-export function presenterState(trainerId: number, activityId: number) {
-  const s = trainerLiveState(trainerId, activityId);
+export async function presenterState(trainerId: number, activityId: number) {
+  const s = await trainerLiveState(trainerId, activityId);
   const a = s.activity;
   const q = s.current;
   const revealed = a.q_state === "revealed";
@@ -506,6 +482,8 @@ export function presenterState(trainerId: number, activityId: number) {
       show_leaderboard: a.show_leaderboard,
     },
     server_now: s.server_now,
+    rev: s.rev,
+    realtime: s.realtime,
     run: s.run ? { number: s.run.number } : null,
     index: s.current_index,
     total: s.questions.length,
@@ -517,4 +495,30 @@ export function presenterState(trainerId: number, activityId: number) {
     leaderboard: revealed || a.status === "ended" ? s.leaderboard.map((r) => ({ id: r.id, name: r.name, score: r.score })) : [],
   };
 }
-export type PresenterState = ReturnType<typeof presenterState>;
+export type PresenterState = Awaited<ReturnType<typeof presenterState>>;
+
+
+// ======================= Cheap "anything changed?" checks for polling =======================
+
+/** True when the client already has the latest state (and no timer is due to expire). */
+function unchanged(row: { rev: number; q_state: string; q_deadline: number | null } | undefined, rev: number) {
+  if (!row || row.rev !== rev) return false;
+  // an open question whose time ran out must be settled by a full read
+  return !(row.q_state === "open" && row.q_deadline && now() > row.q_deadline + GRACE_MS);
+}
+
+export async function trainerRevUnchanged(trainerId: number, activityId: number, rev: number) {
+  const row = await get<{ rev: number; q_state: string; q_deadline: number | null }>(
+    "SELECT a.rev, a.q_state, a.q_deadline FROM activities a JOIN courses c ON c.id = a.course_id WHERE a.id = ? AND c.trainer_id = ?",
+    activityId,
+    trainerId
+  );
+  return unchanged(row, rev);
+}
+
+export async function codeRevUnchanged(code: string, rev: number) {
+  const clean = String(code).replace(/\D/g, "").slice(0, 6);
+  if (clean.length !== 6) return false;
+  const row = await get<{ rev: number; q_state: string; q_deadline: number | null }>("SELECT rev, q_state, q_deadline FROM activities WHERE join_code = ?", clean);
+  return unchanged(row, rev);
+}

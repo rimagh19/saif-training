@@ -1,5 +1,5 @@
 import { requireTrainerApi } from "@/lib/auth";
-import { db } from "@/lib/db";
+import { get, run } from "@/lib/db";
 import { assertSameOrigin, handler, HttpError, readJson, str } from "@/lib/http";
 
 export const PATCH = handler(async (req: Request) => {
@@ -9,8 +9,8 @@ export const PATCH = handler(async (req: Request) => {
   const name = str(b.name, 120);
   const email = str(b.email, 200).toLowerCase();
   if (!name || !/^\S+@\S+\.\S+$/.test(email)) throw new HttpError(400, "generic");
-  const clash = db().prepare("SELECT id FROM trainers WHERE email = ? AND id != ?").get(email, t.id);
+  const clash = await get("SELECT id FROM trainers WHERE email = ? AND id != ?", email, t.id);
   if (clash) throw new HttpError(409, "email_taken");
-  db().prepare("UPDATE trainers SET name = ?, email = ? WHERE id = ?").run(name, email, t.id);
+  await run("UPDATE trainers SET name = ?, email = ? WHERE id = ?", name, email, t.id);
   return Response.json({ ok: true });
 });

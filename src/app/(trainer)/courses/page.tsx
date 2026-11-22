@@ -9,7 +9,7 @@ export default async function Courses({ searchParams }: { searchParams: Promise<
   const t = await requireTrainerPage();
   const { d, lang } = await getDict();
   const sp = await searchParams;
-  const courses = listCourses(t.id, { status: sp.status, q: sp.q });
+  const courses = await listCourses(t.id, { status: sp.status, q: sp.q });
   const tabs = [
     { v: undefined, label: d.all },
     { v: "draft", label: d.st_draft },

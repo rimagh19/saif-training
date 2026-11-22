@@ -17,8 +17,8 @@ export default async function Library({ searchParams }: { searchParams: Promise<
     <>
       <PageHeader title={d.library_title} subtitle={d.lib_sub} />
       <LibraryBrowser
-        initialFacets={bankFacets(t.id, status)}
-        courses={coursesWithActivities(t.id)}
+        initialFacets={await bankFacets(t.id, status)}
+        courses={await coursesWithActivities(t.id)}
         initialFilters={{ q: one("q"), domain: one("domain"), specialty: one("specialty"), topic: one("topic"), difficulty: one("difficulty"), type: one("type"), tag: tags, status, sort }}
       />
     </>

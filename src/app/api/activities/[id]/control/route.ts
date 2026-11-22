@@ -6,10 +6,10 @@ export const POST = handler(async (req: Request, ctx: { params: Promise<{ id: st
   assertSameOrigin(req);
   const t = await requireTrainerApi();
   const b = await readJson(req);
-  control(t.id, toId((await ctx.params).id), String(b.action) as ControlAction, {
-    questionId: b.questionId !== undefined ? Number(b.questionId) : undefined,
-    seconds: b.seconds !== undefined ? Number(b.seconds) : undefined,
-    value: b.value !== undefined ? !!b.value : undefined,
-  });
+  await control(t.id, toId((await ctx.params).id), String(b.action) as ControlAction, {
+        questionId: b.questionId !== undefined ? Number(b.questionId) : undefined,
+        seconds: b.seconds !== undefined ? Number(b.seconds) : undefined,
+        value: b.value !== undefined ? !!b.value : undefined,
+      });
   return Response.json({ ok: true });
 });

@@ -10,7 +10,7 @@ export default async function PrintCourse({ params }: { params: Promise<{ id: st
   const t = await requireTrainerPage();
   const { d, lang } = await getDict();
   let rep;
-  try { rep = courseReport(t.id, Number((await params).id), d); } catch { notFound(); }
+  try { rep = await courseReport(t.id, Number((await params).id), d); } catch { notFound(); }
   return (
     <PrintShell title={`${d.course_report}: ${rep.course.title}`} subtitle={`${rep.course.trainer_name} · ${fmtDate(rep.course.course_date, lang)}`}>
       <CourseReportBody rep={rep} d={d} lang={lang} />

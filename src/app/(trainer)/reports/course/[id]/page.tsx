@@ -10,7 +10,7 @@ export default async function CourseReportPage({ params }: { params: Promise<{ i
   const t = await requireTrainerPage();
   const { d, lang } = await getDict();
   let rep;
-  try { rep = courseReport(t.id, Number((await params).id), d); } catch { notFound(); }
+  try { rep = await courseReport(t.id, Number((await params).id), d); } catch { notFound(); }
   return (
     <>
       <PageHeader

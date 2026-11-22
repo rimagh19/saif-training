@@ -1,5 +1,5 @@
 import { requireTrainerPage } from "@/lib/auth";
-import { db } from "@/lib/db";
+import { all } from "@/lib/db";
 import { getDict } from "@/lib/i18n-server";
 import { fmtDate, PageHeader } from "@/components/ui";
 import { AddTrainerForm, PasswordForm, ProfileForm } from "@/components/settings-forms";
@@ -8,7 +8,7 @@ import { LangSwitch } from "@/components/i18n";
 export default async function Settings() {
   const t = await requireTrainerPage();
   const { d, lang } = await getDict();
-  const trainers = db().prepare("SELECT id, name, email, created_at FROM trainers ORDER BY created_at").all() as { id: number; name: string; email: string; created_at: number }[];
+  const trainers = await all("SELECT id, name, email, created_at FROM trainers ORDER BY created_at") as { id: number; name: string; email: string; created_at: number }[];
   return (
     <>
       <PageHeader title={d.settings_title} />

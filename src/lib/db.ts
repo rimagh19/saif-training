@@ -1,16 +1,21 @@
 import "server-only";
-import Database from "better-sqlite3";
+import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs";
-import path from "node:path";
+import { connection } from "next/server";
+import { createClient, type Client, type InStatement, type Transaction } from "@libsql/client";
 
 /**
- * Data layer. SQLite (WAL mode) stored on disk under DATA_DIR, so nothing is
- * lost when a browser closes or the server restarts. All SQL lives in
- * src/lib/repo/* so the engine can be swapped (e.g. PostgreSQL) later.
+ * Data layer — libSQL (SQLite).
+ *  - Production / Vercel: Turso cloud database (TURSO_DATABASE_URL + TURSO_AUTH_TOKEN).
+ *  - Local / own server:  a SQLite file under DATA_DIR (no extra software needed).
+ * All access is async. Transactions use AsyncLocalStorage so any helper called
+ * inside tx() automatically runs in that transaction.
  */
 
-export const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(process.cwd(), "data"));
-export const UPLOAD_DIR = path.join(DATA_DIR, "uploads");
+// Local file mode only (relative paths resolve from the folder the server is started in).
+export const DATA_DIR = (process.env.DATA_DIR || "data").replace(/[\\/]+$/, "");
+const REMOTE_URL = process.env.TURSO_DATABASE_URL || process.env.DATABASE_URL || "";
+export const IS_REMOTE_DB = !!REMOTE_URL && !REMOTE_URL.startsWith("file:");
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS trainers (
@@ -161,6 +166,13 @@ CREATE TABLE IF NOT EXISTS bank_tags (
   UNIQUE(trainer_id, name)
 );
 
+CREATE TABLE IF NOT EXISTS uploads (
+  name        TEXT PRIMARY KEY,
+  mime        TEXT NOT NULL,
+  data        BLOB NOT NULL,
+  created_at  INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS bank_question_tags (
   question_id INTEGER NOT NULL REFERENCES bank_questions(id) ON DELETE CASCADE,
   tag_id      INTEGER NOT NULL REFERENCES bank_tags(id) ON DELETE CASCADE,
@@ -174,43 +186,172 @@ export const SNAPSHOT_SQL = `json_object('id', q.id, 'activity_id', q.activity_i
   'points', q.points, 'time_limit', q.time_limit, 'difficulty', q.difficulty)`;
 
 /** Additive, idempotent migrations for databases created by earlier versions. */
-function migrate(db: Database.Database) {
-  const cols = new Set((db.prepare("PRAGMA table_info(activities)").all() as { name: string }[]).map((c) => c.name));
-  if (!cols.has("allow_change")) db.exec("ALTER TABLE activities ADD COLUMN allow_change INTEGER NOT NULL DEFAULT 0");
-  if (!cols.has("q_show_dist")) db.exec("ALTER TABLE activities ADD COLUMN q_show_dist INTEGER NOT NULL DEFAULT 0");
-
-  const qcols = new Set((db.prepare("PRAGMA table_info(questions)").all() as { name: string }[]).map((c) => c.name));
-  if (!qcols.has("bank_id")) db.exec("ALTER TABLE questions ADD COLUMN bank_id INTEGER REFERENCES bank_questions(id) ON DELETE SET NULL");
-  if (!qcols.has("bank_version")) db.exec("ALTER TABLE questions ADD COLUMN bank_version INTEGER");
-  if (!qcols.has("deleted_at")) db.exec("ALTER TABLE questions ADD COLUMN deleted_at INTEGER");
-
-  // Snapshot of each question as asked in a run, so later edits never rewrite history.
-  const rcols = new Set((db.prepare("PRAGMA table_info(run_questions)").all() as { name: string }[]).map((c) => c.name));
-  if (!rcols.has("snapshot")) db.exec("ALTER TABLE run_questions ADD COLUMN snapshot TEXT");
-  db.exec(`UPDATE run_questions SET snapshot = (SELECT ${SNAPSHOT_SQL} FROM questions q WHERE q.id = run_questions.question_id) WHERE snapshot IS NULL`);
+/** Additive, idempotent migrations for databases created by earlier versions. */
+async function migrate(c: Exec) {
+  const cols = async (t: string) => new Set((await c.execute(`PRAGMA table_info(${t})`)).rows.map((r) => String(r.name)));
+  const a = await cols("activities");
+  if (!a.has("allow_change")) await c.execute("ALTER TABLE activities ADD COLUMN allow_change INTEGER NOT NULL DEFAULT 0");
+  if (!a.has("q_show_dist")) await c.execute("ALTER TABLE activities ADD COLUMN q_show_dist INTEGER NOT NULL DEFAULT 0");
+  if (!a.has("rev")) await c.execute("ALTER TABLE activities ADD COLUMN rev INTEGER NOT NULL DEFAULT 0");
+  const q = await cols("questions");
+  if (!q.has("bank_id")) await c.execute("ALTER TABLE questions ADD COLUMN bank_id INTEGER REFERENCES bank_questions(id) ON DELETE SET NULL");
+  if (!q.has("bank_version")) await c.execute("ALTER TABLE questions ADD COLUMN bank_version INTEGER");
+  if (!q.has("deleted_at")) await c.execute("ALTER TABLE questions ADD COLUMN deleted_at INTEGER");
+  const r = await cols("run_questions");
+  if (!r.has("snapshot")) await c.execute("ALTER TABLE run_questions ADD COLUMN snapshot TEXT");
+  await c.execute(`UPDATE run_questions SET snapshot = (SELECT ${SNAPSHOT_SQL} FROM questions q WHERE q.id = run_questions.question_id) WHERE snapshot IS NULL`);
+  await importLegacyUploads(c);
 }
 
-type G = typeof globalThis & { __safeDb?: Database.Database };
-
-function open(): Database.Database {
-  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-  const db = new Database(path.join(DATA_DIR, "platform.db"));
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
-  db.pragma("busy_timeout = 5000");
-  db.exec(SCHEMA);
-  migrate(db);
-  return db;
+/** Images saved to disk by earlier versions are moved into the database once. */
+async function importLegacyUploads(c: Exec) {
+  const dir = `${DATA_DIR}/uploads`;
+  if (IS_REMOTE_DB || !fs.existsSync(dir)) return;
+  const mime: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" };
+  for (const f of fs.readdirSync(dir)) {
+    if (!/^[a-f0-9]{32}\.(png|jpe?g|webp|gif)$/.test(f)) continue;
+    await c.execute({
+      sql: "INSERT OR IGNORE INTO uploads(name, mime, data, created_at) VALUES (?, ?, ?, ?)",
+      args: [f, mime[f.split(".").pop()!], new Uint8Array(fs.readFileSync(`${dir}/${f}`)), Date.now()],
+    });
+  }
 }
 
-export function db(): Database.Database {
+// ---------------------------------------------------------------- connection
+
+type Exec = Pick<Client, "execute"> | Transaction;
+type G = typeof globalThis & { __safeDb?: { client: Client; ready: Promise<void>; lock: Promise<unknown> } };
+
+function state() {
   const g = globalThis as G;
-  if (!g.__safeDb) g.__safeDb = open();
+  if (!g.__safeDb) {
+    let client: Client;
+    if (IS_REMOTE_DB) {
+      client = createClient({ url: REMOTE_URL, authToken: process.env.TURSO_AUTH_TOKEN || process.env.DATABASE_AUTH_TOKEN });
+    } else {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      client = createClient({ url: REMOTE_URL || `file:${DATA_DIR}/platform.db` });
+    }
+    const ready = (async () => {
+      if (!IS_REMOTE_DB) {
+        await client.execute("PRAGMA journal_mode = WAL");
+        await localPragmas(client);
+      }
+      await client.executeMultiple(SCHEMA);
+      await migrate(client);
+    })();
+    g.__safeDb = { client, ready, lock: Promise.resolve() };
+    ready.catch((e) => {
+      console.error("Database initialisation failed:", e);
+      g.__safeDb = undefined; // retry on next request
+    });
+  }
   return g.__safeDb;
 }
 
-export const now = () => Date.now();
-
-export function tx<T>(fn: () => T): T {
-  return db().transaction(fn)();
+async function localPragmas(c: Client) {
+  await c.execute("PRAGMA foreign_keys = ON");
+  await c.execute("PRAGMA busy_timeout = 5000");
 }
+
+// The local SQLite file is used through ONE connection, so statements are
+// serialised with an in-process lock (transactions hold it until commit).
+// Remote (Turso) handles concurrency itself.
+const txStore = new AsyncLocalStorage<Exec>();
+
+async function withLock<T>(fn: () => Promise<T>): Promise<T> {
+  const s = state();
+  const prev = s.lock;
+  let release!: () => void;
+  s.lock = new Promise<void>((r) => (release = r));
+  try {
+    await prev.catch(() => {});
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
+type Arg = string | number | bigint | null | Uint8Array | ArrayBuffer;
+const norm = (args: unknown[]): Arg[] =>
+  args.map((a) => (a === undefined ? null : typeof a === "boolean" ? (a ? 1 : 0) : (a as Arg)));
+
+const isBusy = (e: unknown) => /SQLITE_BUSY|database is locked/i.test(String((e as Error)?.message ?? e));
+
+async function exec(stmt: InStatement) {
+  // Never touch the database while Next.js pre-renders at build time — only for real requests.
+  await connection();
+  const s = state();
+  await s.ready;
+  const inTx = txStore.getStore();
+  if (inTx) return inTx.execute(stmt);
+  const go = () => s.client.execute(stmt);
+  if (!IS_REMOTE_DB) return await withLock(go);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await go();
+    } catch (e) {
+      if (!isBusy(e) || attempt >= 5) throw e;
+      await new Promise((r) => setTimeout(r, 50 * 2 ** attempt));
+    }
+  }
+}
+
+const plain = <T>(rows: unknown[]): T[] => rows.map((r) => ({ ...(r as object) }) as T);
+
+/** All rows. */
+export async function all<T = Record<string, unknown>>(sql: string, ...args: unknown[]): Promise<T[]> {
+  return plain<T>((await exec({ sql, args: norm(args) })).rows);
+}
+/** First row or undefined. */
+export async function get<T = Record<string, unknown>>(sql: string, ...args: unknown[]): Promise<T | undefined> {
+  return (await all<T>(sql, ...args))[0];
+}
+/** Write statement; returns affected rows and the new row id. */
+export async function run(sql: string, ...args: unknown[]): Promise<{ changes: number; lastId: number }> {
+  const r = await exec({ sql, args: norm(args) });
+  return { changes: r.rowsAffected, lastId: r.lastInsertRowid !== undefined ? Number(r.lastInsertRowid) : 0 };
+}
+
+/** Runs fn atomically. Nested calls join the outer transaction. */
+export async function tx<T>(fn: () => Promise<T>): Promise<T> {
+  if (txStore.getStore()) return await fn();
+  await connection();
+  const s = state();
+  await s.ready;
+  if (!IS_REMOTE_DB) {
+    return await withLock(async () => {
+      // The local client hands its connection to the transaction and opens a fresh one
+      // afterwards, so the per-connection settings are applied again once it is done.
+      const t = await s.client.transaction("write");
+      try {
+        const out = await txStore.run(t, fn);
+        await t.commit();
+        return out;
+      } catch (e) {
+        await t.rollback().catch(() => {});
+        throw e;
+      } finally {
+        t.close();
+        await localPragmas(s.client);
+      }
+    });
+  }
+  for (let attempt = 0; ; attempt++) {
+    let t: Transaction | null = null;
+    try {
+      t = await s.client.transaction("write");
+      const out = await txStore.run(t, fn);
+      await t.commit();
+      return out;
+    } catch (e) {
+      await t?.rollback().catch(() => {});
+      if (!isBusy(e) || attempt >= 4) throw e;
+      await new Promise((r) => setTimeout(r, 80 * 2 ** attempt));
+    } finally {
+      t?.close();
+    }
+  }
+}
+
+export const now = () => Date.now();

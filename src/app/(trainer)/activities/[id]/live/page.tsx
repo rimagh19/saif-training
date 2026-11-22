@@ -9,7 +9,7 @@ export default async function LivePage({ params }: { params: Promise<{ id: strin
   const t = await requireTrainerPage();
   const { d } = await getDict();
   let a;
-  try { a = getActivity(t.id, Number((await params).id)); } catch { notFound(); }
+  try { a = await getActivity(t.id, Number((await params).id)); } catch { notFound(); }
   return (
     <>
       <PageHeader

@@ -155,7 +155,7 @@ await test("every trainer API called directly with a trainee session returns 401
 });
 
 // ---------- what a trainee receives ----------
-const STATE_KEYS = ["activity", "server_now", "me", "q_state", "question", "my_answer", "can_answer", "answer_locked", "reveal", "my_score", "my_answered"].sort();
+const STATE_KEYS = ["activity", "server_now", "rev", "realtime", "me", "q_state", "question", "my_answer", "can_answer", "answer_locked", "reveal", "my_score", "my_answered"].sort();
 const QUESTION_KEYS = ["id", "type", "title", "body", "image", "options", "points", "time_limit", "deadline", "index", "total"].sort();
 await test("waiting state: no question is sent before the trainer starts it", async () => {
   const s = (await T.get(`/api/play/${X.code}`)).data;
@@ -257,7 +257,19 @@ await test("a trainee session works for its own activity only; forged tokens are
   forged.jar.set(`safe_p_${X.act}`, "A".repeat(5000));
   expectStatus(await forged.get(`/api/play/${X.code}`), 200);
 });
-await test("trainee event stream carries change signals only (no data)", async () => {
+await test("trainee change channel carries no data (SSE signal or bare 204 when polling)", async () => {
+  const mode = (await T.get(`/api/play/${X.code}`)).data.realtime;
+  if (mode !== "sse") {
+    const st = await T.get(`/api/play/${X.code}`);
+    const r = await T.get(`/api/play/${X.code}?rev=${st.data.rev}`);
+    expectStatus(r, 204);
+    assert.equal(r.data, "", "204 has no body");
+    expectStatus(await T.get(`/api/play/${X.code}/stream`), 204);
+    // trainer-side polling endpoints are protected like the full ones
+    expectStatus(await T.get(`/api/activities/${X.act}/live?rev=${st.data.rev}`), 401);
+    expectStatus(await T.get(`/api/activities/${X.act}/present?rev=${st.data.rev}`), 401);
+    return;
+  }
   const ctrl = new AbortController();
   const res = await fetch(`${BASE}/api/play/${X.code}/stream`, { signal: ctrl.signal, headers: { Cookie: T.cookieHeader() } });
   const reader = res.body.getReader();

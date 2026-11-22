@@ -11,7 +11,7 @@ export const POST = handler(async (req: Request) => {
   const v = validateQuestion(b);
   if (!v.ok) throw new HttpError(400, v.error);
   const activityId = toId(b.activity_id);
-  const id = createQuestion(t.id, activityId, v.value);
-  publish(activityId, "state");
+  const id = await createQuestion(t.id, activityId, v.value);
+  await publish(activityId, "state");
   return Response.json({ id });
 });

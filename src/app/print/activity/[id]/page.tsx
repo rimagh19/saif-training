@@ -11,7 +11,7 @@ export default async function PrintActivity({ params, searchParams }: { params: 
   const { d, lang } = await getDict();
   const sp = await searchParams;
   let rep;
-  try { rep = activityReport(t.id, Number((await params).id), sp.run ? Number(sp.run) : undefined, d); } catch { notFound(); }
+  try { rep = await activityReport(t.id, Number((await params).id), sp.run ? Number(sp.run) : undefined, d); } catch { notFound(); }
   if (!rep.run) notFound();
   return (
     <PrintShell title={`${d.activity_report}: ${rep.activity.title}`} subtitle={`${rep.activity.course_title} · ${d.run_n}${rep.run.number} · ${fmtDateTime(rep.run.started_at, lang)}`}>

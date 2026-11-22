@@ -6,6 +6,6 @@ import { courseInput } from "@/lib/validate";
 export const POST = handler(async (req: Request) => {
   assertSameOrigin(req);
   const t = await requireTrainerApi();
-  const id = createCourse(t.id, courseInput(await readJson(req)));
+  const id = await createCourse(t.id, courseInput(await readJson(req)));
   return Response.json({ id });
 });

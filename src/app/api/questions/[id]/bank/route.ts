@@ -7,5 +7,5 @@ export const POST = handler(async (req: Request, ctx: { params: Promise<{ id: st
   assertSameOrigin(req);
   const t = await requireTrainerApi();
   const b = await readJson(req);
-  return Response.json({ bank_id: saveQuestionToBank(t.id, toId((await ctx.params).id), bankMetaInput(b)) });
+  return Response.json({ bank_id: await saveQuestionToBank(t.id, toId((await ctx.params).id), bankMetaInput(b)) });
 });

@@ -11,11 +11,11 @@ export default async function BankQuestionPage({ params }: { params: Promise<{ i
   const t = await requireTrainerPage();
   const { d } = await getDict();
   let q;
-  try { q = getBankQuestion(t.id, Number((await params).id)); } catch { notFound(); }
+  try { q = await getBankQuestion(t.id, Number((await params).id)); } catch { notFound(); }
   return (
     <>
       <PageHeader title={q.title || q.body.slice(0, 80)} back={{ href: "/library", label: d.library_title }} subtitle={[q.domain, q.specialty, q.topic].filter(Boolean).join(" › ") || d.no_classification} />
-      <BankEditor key={`${q.id}-${q.updated_at}`} question={q} usage={bankUsage(t.id, q.id)} suggestions={bankSuggestions(t.id)} courses={coursesWithActivities(t.id)} />
+      <BankEditor key={`${q.id}-${q.updated_at}`} question={q} usage={await bankUsage(t.id, q.id)} suggestions={await bankSuggestions(t.id)} courses={await coursesWithActivities(t.id)} />
     </>
   );
 }

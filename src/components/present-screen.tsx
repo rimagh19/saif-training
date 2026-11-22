@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { useI18n } from "./i18n";
 import { api, ApiError } from "./api";
-import { useCountdown, useLiveResource } from "./live-hooks";
+import { TRAINER_POLL_MS, useCountdown, useLiveResource } from "./live-hooks";
 import { QR, useOrigin } from "./qr";
 import { Logo } from "./logo";
 import type { PresenterState } from "@/lib/live";
@@ -29,7 +29,8 @@ export function PresentScreen({ activityId }: { activityId: number }) {
   const origin = useOrigin();
   const { data: s, reload, serverOffset, connected } = useLiveResource<PresenterState>(
     `/api/activities/${activityId}/present`,
-    `/api/activities/${activityId}/stream`
+    `/api/activities/${activityId}/stream`,
+    TRAINER_POLL_MS
   );
   const left = useCountdown(s?.activity.q_state === "open" ? s.activity.q_deadline : null, serverOffset, reload);
   const [busy, setBusy] = useState(false);

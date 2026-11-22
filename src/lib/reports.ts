@@ -1,37 +1,31 @@
 import "server-only";
-import { db } from "./db";
+import { all } from "./db";
 import { HttpError } from "./http";
 import { getActivity, getCourse, listQuestions } from "./repo";
 import { describeAnswer, describeCorrect, type AnswerPayload, type Question, type TfLabels } from "./questions";
 
 export type RunRow = { id: number; number: number; started_at: number; ended_at: number | null; participants: number };
 
-export function activityRuns(activityId: number): RunRow[] {
-  return db()
-    .prepare(
-      `SELECT r.id, r.number, r.started_at, r.ended_at, (SELECT COUNT(*) FROM participants p WHERE p.run_id = r.id) AS participants
-       FROM runs r WHERE r.activity_id = ? ORDER BY r.number DESC`
-    )
-    .all(activityId) as RunRow[];
+export async function activityRuns(activityId: number): Promise<RunRow[]> {
+  return await all(`SELECT r.id, r.number, r.started_at, r.ended_at, (SELECT COUNT(*) FROM participants p WHERE p.run_id = r.id) AS participants
+       FROM runs r WHERE r.activity_id = ? ORDER BY r.number DESC`, activityId) as RunRow[];
 }
 
 const pct = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 1000) / 10 : 0);
 
-export function activityReport(trainerId: number, activityId: number, runId?: number, tf?: TfLabels) {
-  const activity = getActivity(trainerId, activityId);
-  const runs = activityRuns(activityId);
+export async function activityReport(trainerId: number, activityId: number, runId?: number, tf?: TfLabels) {
+  const activity = await getActivity(trainerId, activityId);
+  const runs = await activityRuns(activityId);
   const run = runId ? runs.find((r) => r.id === runId) : runs[0];
   if (runId && !run) throw new HttpError(404, "not_found");
-  const allQs = listQuestions(activityId);
+  const allQs = await listQuestions(activityId);
   if (!run) {
     return { activity, runs, run: null, questions: [], participants: [], summary: null, questionStats: [], matrix: [] as never[], generated_at: Date.now() };
   }
 
   // Questions exactly as they were asked in this run (snapshots), so later edits
   // or deletions of the activity question never change past results.
-  const snaps = db()
-    .prepare("SELECT question_id, snapshot FROM run_questions WHERE run_id = ? AND snapshot IS NOT NULL")
-    .all(run.id) as { question_id: number; snapshot: string }[];
+  const snaps = await all("SELECT question_id, snapshot FROM run_questions WHERE run_id = ? AND snapshot IS NOT NULL", run.id) as { question_id: number; snapshot: string }[];
   const livePos = new Map(allQs.map((q, i) => [q.id, i]));
   const questions: (Question & { display_position: number })[] = snaps
     .map((r) => JSON.parse(r.snapshot) as Question)
@@ -40,12 +34,8 @@ export function activityReport(trainerId: number, activityId: number, runId?: nu
   const askedIds = new Set(questions.map((q) => q.id));
   const maxScore = questions.reduce((s, q) => s + q.points, 0);
 
-  const people = db()
-    .prepare("SELECT id, display_name, trainee_number, joined_at FROM participants WHERE run_id = ? ORDER BY joined_at")
-    .all(run.id) as { id: number; display_name: string; trainee_number: string | null; joined_at: number }[];
-  const answers = db()
-    .prepare("SELECT id, participant_id, question_id, answer, is_correct, score, graded_by FROM answers WHERE run_id = ?")
-    .all(run.id) as { id: number; participant_id: number; question_id: number; answer: string; is_correct: number | null; score: number; graded_by: string }[];
+  const people = await all("SELECT id, display_name, trainee_number, joined_at FROM participants WHERE run_id = ? ORDER BY joined_at", run.id) as { id: number; display_name: string; trainee_number: string | null; joined_at: number }[];
+  const answers = await all("SELECT id, participant_id, question_id, answer, is_correct, score, graded_by FROM answers WHERE run_id = ?", run.id) as { id: number; participant_id: number; question_id: number; answer: string; is_correct: number | null; score: number; graded_by: string }[];
 
   const byP = new Map<number, typeof answers>();
   for (const a of answers) {
@@ -126,13 +116,13 @@ export function activityReport(trainerId: number, activityId: number, runId?: nu
 
   return { activity, runs, run, questions, participants, summary, questionStats, matrix, generated_at: Date.now() };
 }
-export type ActivityReport = ReturnType<typeof activityReport>;
+export type ActivityReport = Awaited<ReturnType<typeof activityReport>>;
 
 /** Course-level report: latest run of each activity, aggregated per trainee. */
-export function courseReport(trainerId: number, courseId: number, tf?: TfLabels) {
-  const course = getCourse(trainerId, courseId);
-  const acts = db().prepare("SELECT id FROM activities WHERE course_id = ? ORDER BY created_at").all(courseId) as { id: number }[];
-  const activityReports = acts.map((a) => activityReport(trainerId, a.id, undefined, tf));
+export async function courseReport(trainerId: number, courseId: number, tf?: TfLabels) {
+  const course = await getCourse(trainerId, courseId);
+  const acts = await all("SELECT id FROM activities WHERE course_id = ? ORDER BY created_at", courseId) as { id: number }[];
+  const activityReports = await Promise.all(acts.map(async (a) => await activityReport(trainerId, a.id, undefined, tf)));
 
   const trainees = new Map<string, { name: string; trainee_number: string | null; score: number; max: number; correct: number; wrong: number; activities: number }>();
   for (const r of activityReports) {
@@ -170,19 +160,15 @@ export function courseReport(trainerId: number, courseId: number, tf?: TfLabels)
     },
   };
 }
-export type CourseReport = ReturnType<typeof courseReport>;
+export type CourseReport = Awaited<ReturnType<typeof courseReport>>;
 
 /** Latest runs across all of a trainer's courses (dashboard + reports index). */
-export function recentRuns(trainerId: number, limit = 8) {
-  const rows = db()
-    .prepare(
-      `SELECT r.id AS run_id, r.number, r.started_at, r.ended_at, a.id AS activity_id, a.title AS activity_title, c.id AS course_id, c.title AS course_title
+export async function recentRuns(trainerId: number, limit = 8) {
+  const rows = await all(`SELECT r.id AS run_id, r.number, r.started_at, r.ended_at, a.id AS activity_id, a.title AS activity_title, c.id AS course_id, c.title AS course_title
        FROM runs r JOIN activities a ON a.id = r.activity_id JOIN courses c ON c.id = a.course_id
-       WHERE c.trainer_id = ? ORDER BY r.started_at DESC LIMIT ?`
-    )
-    .all(trainerId, limit) as { run_id: number; number: number; started_at: number; ended_at: number | null; activity_id: number; activity_title: string; course_id: number; course_title: string }[];
-  return rows.map((r) => {
-    const rep = activityReport(trainerId, r.activity_id, r.run_id);
+       WHERE c.trainer_id = ? ORDER BY r.started_at DESC LIMIT ?`, trainerId, limit) as { run_id: number; number: number; started_at: number; ended_at: number | null; activity_id: number; activity_title: string; course_id: number; course_title: string }[];
+  return Promise.all(rows.map(async (r) => {
+    const rep = await activityReport(trainerId, r.activity_id, r.run_id);
     return { ...r, summary: rep.summary, hardest: [...rep.questionStats].sort((a, b) => b.wrong_rate - a.wrong_rate)[0] ?? null };
-  });
+  }));
 }

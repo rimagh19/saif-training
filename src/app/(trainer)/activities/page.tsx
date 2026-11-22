@@ -10,8 +10,8 @@ export default async function Activities({ searchParams }: { searchParams: Promi
   const t = await requireTrainerPage();
   const { d } = await getDict();
   const sp = await searchParams;
-  const acts = listActivities(t.id, { status: sp.status });
-  const courses = listCourses(t.id).map((c) => ({ id: c.id, title: c.title }));
+  const acts = await listActivities(t.id, { status: sp.status });
+  const courses = (await listCourses(t.id)).map((c) => ({ id: c.id, title: c.title }));
   const tabs = [
     { v: undefined, label: d.all },
     { v: "live", label: d.act_live },

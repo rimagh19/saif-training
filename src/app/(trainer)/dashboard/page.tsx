@@ -11,10 +11,10 @@ export const metadata = { title: "Dashboard" };
 export default async function Dashboard() {
   const t = await requireTrainerPage();
   const { d, lang } = await getDict();
-  const stats = dashboardStats(t.id);
-  const courses = listCourses(t.id).slice(0, 5);
-  const live = listActivities(t.id, { status: "live" });
-  const results = recentRuns(t.id, 5);
+  const stats = await dashboardStats(t.id);
+  const courses = (await listCourses(t.id)).slice(0, 5);
+  const live = await listActivities(t.id, { status: "live" });
+  const results = await recentRuns(t.id, 5);
 
   return (
     <>

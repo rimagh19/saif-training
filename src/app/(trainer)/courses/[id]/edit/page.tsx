@@ -9,7 +9,7 @@ export default async function EditCourse({ params }: { params: Promise<{ id: str
   const t = await requireTrainerPage();
   const { d } = await getDict();
   let c;
-  try { c = getCourse(t.id, Number((await params).id)); } catch { notFound(); }
+  try { c = await getCourse(t.id, Number((await params).id)); } catch { notFound(); }
   return (
     <>
       <PageHeader title={d.edit_course} back={{ href: `/courses/${c.id}`, label: c.title }} />

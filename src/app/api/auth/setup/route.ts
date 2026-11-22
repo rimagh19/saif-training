@@ -1,4 +1,4 @@
-import { db, now, tx } from "@/lib/db";
+import { get, now, run, tx } from "@/lib/db";
 import { assertSameOrigin, handler, HttpError, readJson, str } from "@/lib/http";
 import { createTrainerSession, hashPassword } from "@/lib/auth";
 
@@ -11,11 +11,11 @@ export const POST = handler(async (req: Request) => {
   const password = typeof body.password === "string" ? body.password : "";
   if (!name || !/^\S+@\S+\.\S+$/.test(email)) throw new HttpError(400, "generic");
   if (password.length < 8) throw new HttpError(400, "weak_password");
-  const id = tx(() => {
-    const c = (db().prepare("SELECT COUNT(*) c FROM trainers").get() as { c: number }).c;
-    if (c > 0) throw new HttpError(403, "setup_done");
-    return Number(db().prepare("INSERT INTO trainers(name, email, password_hash, created_at) VALUES (?, ?, ?, ?)").run(name, email, hashPassword(password), now()).lastInsertRowid);
-  });
+  const id = await tx(async () => {
+      const c = (await get("SELECT COUNT(*) c FROM trainers") as { c: number }).c;
+      if (c > 0) throw new HttpError(403, "setup_done");
+      return (await run("INSERT INTO trainers(name, email, password_hash, created_at) VALUES (?, ?, ?, ?)", name, email, hashPassword(password), now())).lastId;
+    });
   await createTrainerSession(id);
   return Response.json({ ok: true });
 });

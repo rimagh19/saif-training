@@ -10,7 +10,7 @@ export default async function NewBankQuestion() {
   return (
     <>
       <PageHeader title={d.lib_new} back={{ href: "/library", label: d.library_title }} />
-      <BankEditor suggestions={bankSuggestions(t.id)} courses={[]} />
+      <BankEditor suggestions={await bankSuggestions(t.id)} courses={[]} />
     </>
   );
 }

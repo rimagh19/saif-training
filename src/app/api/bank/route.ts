@@ -19,7 +19,7 @@ export const GET = handler(async (req: Request) => {
     limit: Number(p.get("limit")) || 50,
     offset: Number(p.get("offset")) || 0,
   };
-  return Response.json(searchBank(t.id, f));
+  return Response.json(await searchBank(t.id, f));
 });
 
 export const POST = handler(async (req: Request) => {
@@ -28,5 +28,5 @@ export const POST = handler(async (req: Request) => {
   const b = await readJson(req);
   const v = validateQuestion(b);
   if (!v.ok) throw new HttpError(400, v.error);
-  return Response.json({ id: createBankQuestion(t.id, v.value, bankMetaInput(b)) });
+  return Response.json({ id: await createBankQuestion(t.id, v.value, bankMetaInput(b)) });
 });

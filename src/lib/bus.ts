@@ -1,15 +1,22 @@
 import "server-only";
 import { EventEmitter } from "node:events";
+import { run } from "./db";
 
 /**
- * In-process pub/sub used to push live updates over Server-Sent Events.
- * Events only say "something changed in activity N"; every client then
- * re-reads its own permission-filtered state from the server, so no data
- * leaks through the event channel itself.
+ * Live updates.
  *
- * Runs in a single Node process. For multiple instances, replace with
- * Redis pub/sub or Postgres LISTEN/NOTIFY behind the same two functions.
+ * Every change bumps activities.rev in the database. Clients learn about changes in one of two ways:
+ *  - "sse"  (own server / single long-running process): pushed instantly over Server-Sent Events
+ *           through this in-process emitter.
+ *  - "poll" (Vercel / serverless, many short-lived instances): clients ask every ~1.5 s whether the
+ *           revision changed; an unchanged revision costs one tiny query and a 204 reply.
+ * Events only say "something changed in activity N"; every client then re-reads its own
+ * permission-filtered state, so no data leaks through the change channel itself.
  */
+export type RealtimeMode = "sse" | "poll";
+export const REALTIME_MODE: RealtimeMode =
+  process.env.REALTIME_MODE === "sse" || process.env.REALTIME_MODE === "poll" ? process.env.REALTIME_MODE : process.env.VERCEL ? "poll" : "sse";
+
 type G = typeof globalThis & { __safeBus?: EventEmitter };
 const g = globalThis as G;
 const bus = g.__safeBus ?? (g.__safeBus = new EventEmitter());
@@ -17,7 +24,8 @@ bus.setMaxListeners(0);
 
 export type LiveEvent = { kind: "state" | "answer" | "participant"; at: number };
 
-export function publish(activityId: number, kind: LiveEvent["kind"]) {
+export async function publish(activityId: number, kind: LiveEvent["kind"]) {
+  await run("UPDATE activities SET rev = rev + 1 WHERE id = ?", activityId);
   bus.emit(`a:${activityId}`, { kind, at: Date.now() } satisfies LiveEvent);
 }
 

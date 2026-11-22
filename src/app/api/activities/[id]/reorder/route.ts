@@ -9,7 +9,7 @@ export const POST = handler(async (req: Request, ctx: { params: Promise<{ id: st
   const id = toId((await ctx.params).id);
   const b = await readJson(req);
   if (!Array.isArray(b.ids)) throw new HttpError(400, "invalid_order");
-  reorderQuestions(t.id, id, b.ids.map(Number));
-  publish(id, "state");
+  await reorderQuestions(t.id, id, b.ids.map(Number));
+  await publish(id, "state");
   return Response.json({ ok: true });
 });

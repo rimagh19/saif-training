@@ -8,6 +8,6 @@ export const POST = handler(async (req: Request) => {
   const b = await readJson(req);
   const title = str(b.title, 200);
   if (!title) throw new HttpError(400, "title_required");
-  const id = createActivity(t.id, toId(b.course_id), { title, description: str(b.description, 4000) });
+  const id = await createActivity(t.id, toId(b.course_id), { title, description: str(b.description, 4000) });
   return Response.json({ id });
 });

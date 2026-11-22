@@ -1,13 +1,11 @@
 import { requireTrainerPage } from "@/lib/auth";
-import { db } from "@/lib/db";
+import { get } from "@/lib/db";
 import { Sidebar } from "@/components/sidebar";
 
 export default async function TrainerLayout({ children }: { children: React.ReactNode }) {
   const t = await requireTrainerPage();
   const live = (
-    db()
-      .prepare("SELECT COUNT(*) c FROM activities a JOIN courses c2 ON c2.id = a.course_id WHERE c2.trainer_id = ? AND a.status = 'live'")
-      .get(t.id) as { c: number }
+    await get("SELECT COUNT(*) c FROM activities a JOIN courses c2 ON c2.id = a.course_id WHERE c2.trainer_id = ? AND a.status = 'live'", t.id) as { c: number }
   ).c;
   return (
     <div className="min-h-screen bg-sand/40">

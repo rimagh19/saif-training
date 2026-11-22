@@ -8,6 +8,6 @@ export const metadata = { title: "Presentation" };
 export default async function PresentPage({ params }: { params: Promise<{ id: string }> }) {
   const t = await requireTrainerPage();
   let a;
-  try { a = getActivity(t.id, Number((await params).id)); } catch { notFound(); }
+  try { a = await getActivity(t.id, Number((await params).id)); } catch { notFound(); }
   return <PresentScreen activityId={a.id} />;
 }

@@ -6,6 +6,6 @@ export const PATCH = handler(async (req: Request, ctx: { params: Promise<{ id: s
   assertSameOrigin(req);
   const t = await requireTrainerApi();
   const b = await readJson(req);
-  gradeAnswer(t.id, toId((await ctx.params).id), !!b.correct);
+  await gradeAnswer(t.id, toId((await ctx.params).id), !!b.correct);
   return Response.json({ ok: true });
 });

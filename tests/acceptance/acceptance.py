@@ -415,7 +415,9 @@ def main():
                 shot(pres, "presenter_revealed_q1")
 
         lat = sorted(latencies)
-        check(7, f"answer reaches the trainer panel quickly (median {lat[len(lat)//2]:.2f}s, max {lat[-1]:.2f}s over {len(lat)} answers)", lat[-1] < 3.0)
+        mode = json.loads(trainer.request.get(f"{BASE}/api/activities/{act_id}/live").text())["realtime"]
+        limit = 3.0 if mode == "sse" else 4.0  # polling adds up to one poll interval (1 s) by design
+        check(7, f"answer reaches the trainer panel quickly [{mode}] (median {lat[len(lat)//2]:.2f}s, max {lat[-1]:.2f}s over {len(lat)} answers; limit {limit:.0f}s, includes tapping submit)", lat[-1] < limit)
         # end
         phase["tag"] = "ended"
         tp.once("dialog", lambda d: d.accept())

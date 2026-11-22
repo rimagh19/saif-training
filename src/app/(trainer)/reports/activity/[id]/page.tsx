@@ -12,7 +12,7 @@ export default async function ActivityReportPage({ params, searchParams }: { par
   const { d, lang } = await getDict();
   const sp = await searchParams;
   let rep;
-  try { rep = activityReport(t.id, Number((await params).id), sp.run ? Number(sp.run) : undefined, d); } catch { notFound(); }
+  try { rep = await activityReport(t.id, Number((await params).id), sp.run ? Number(sp.run) : undefined, d); } catch { notFound(); }
   const a = rep.activity;
   return (
     <>

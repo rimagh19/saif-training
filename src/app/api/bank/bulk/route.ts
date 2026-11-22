@@ -8,16 +8,16 @@ export const POST = handler(async (req: Request) => {
   const b = await readJson(req);
   const ids = Array.isArray(b.ids) ? [...new Set(b.ids.map(Number).filter((n) => Number.isInteger(n) && n > 0))].slice(0, 500) : [];
   if (ids.length === 0) throw new HttpError(400, "select_questions");
-  ids.forEach((id) => getBankQuestion(t.id, id)); // ownership check for every id
+  for (const id of ids) await getBankQuestion(t.id, id); // ownership check for every id (throws 404)
   switch (b.action) {
     case "archive":
-      setBankStatus(t.id, ids, "archived");
+      await setBankStatus(t.id, ids, "archived");
       break;
     case "restore":
-      setBankStatus(t.id, ids, "active");
+      await setBankStatus(t.id, ids, "active");
       break;
     case "add_tag":
-      addTagToMany(t.id, ids, str(b.tag, 40));
+      await addTagToMany(t.id, ids, str(b.tag, 40));
       break;
     default:
       throw new HttpError(400, "unknown_action");
